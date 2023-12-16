@@ -1,76 +1,132 @@
-from flask import Flask, jsonify
-from flask_sqlalchemy import SQLAlchemy
-# from functools import wraps
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+import pandas as pd
+from datetime import datetime
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mssql+pyodbc://dss-461-server-admin:J2TWTNN8A7EQ46US$@dss-461-server.database.windows.net:1433/energy?driver=ODBC+Driver+17+for+SQL+Server'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+CORS(app, resources={r"/api/*": {"origins": "http://localhost:3000"}})
 
-db = SQLAlchemy(app)
+def load_excel_data():
+    try:
+        data = pd.read_excel('/Users/eren/Desktop/re-gridopt/api/processed_data3.xlsx')
+        print("Loaded data columns:", data.columns)
+        if 'Hour Ending' not in data.columns:
+            raise ValueError("Column 'Hour Ending' not found in Excel file.")
+        data['Hour Ending'] = pd.to_datetime(data['Hour Ending'])
+        return data
+    except Exception as e:
+        print(f"Error: {e}")
+        return pd.DataFrame()
 
-# # Simple Authentication Function
-# def check_auth(username, password):
-#     # Replace these with desired credentials for demonstration
-#     return username == "admin" and password == "password"
+def parse_date_based_on_flags(date_str, flags):
+    if date_str is None:
+        return None
 
-# # Decorator to Require Authentication
-# def requires_auth(f):
-#     @wraps(f)
-#     def decorated(*args, **kwargs):
-#         auth = request.authorization
-#         if not auth or not check_auth(auth.username, auth.password):
-#             return jsonify({"message": "Authentication Required"}), 401
-#         return f(*args, **kwargs)
-#     return decorated
+    date_format = ''
+    date_format += '%Y' if flags.get('y') else ''
+    date_format += '-%m' if flags.get('m') else ''
+    date_format += '-%d' if flags.get('d') else ''
+    date_format += ' %H' if flags.get('h') else ''
+    date_format = date_format.strip('- ')
+    try:
+        return datetime.strptime(date_str, date_format)
+    except ValueError:
+        return None
 
-# Database Model for GenerationData
-class GenerationData(db.Model):
-    __table_args__ = {'schema': 'generation'}
-    __tablename__ = 'GenerationData'
-    id = db.Column(db.Integer, primary_key=True)
-    Year = db.Column(db.Integer)
-    Month = db.Column(db.Integer)
-    State = db.Column(db.String(50))
-    ProducerType = db.Column(db.String(50))
-    EnergySource = db.Column(db.String(50))
-    Generation = db.Column(db.Float)
+def filter_data(data, start_date_str, end_date_str, flags):
+    if 'Hour Ending' not in data.columns:
+        print("Error: 'Hour Ending' column not found in data.")
+        return pd.DataFrame()  # Return empty DataFrame or handle as needed
 
-# Database Model for ConsumptionData
-class ConsumptionData(db.Model):
-    __table_args__ = {'schema': 'consumption'}
-    __tablename__ = 'ConsumptionData'
-    id = db.Column(db.Integer, primary_key=True)
-    Year = db.Column(db.Integer)
-    Hydroelectric = db.Column(db.Float)
-    Geothermal = db.Column(db.Float)
-    Solar = db.Column(db.Float)
-    Wind = db.Column(db.Float)
-    Wood = db.Column(db.Float)
-    Waste = db.Column(db.Float)
-    Biofuels = db.Column(db.Float)
-    TotalBiomass = db.Column(db.Float)
-    TotalRenewable = db.Column(db.Float)
+    start_date = parse_date_based_on_flags(start_date_str, flags) if start_date_str else None
+    end_date = parse_date_based_on_flags(end_date_str, flags) if end_date_str else None
 
-# Route for fetching GenerationData
-@app.route('/generation', methods=['GET'])
-# @requires_auth
-def get_generation_data():
-    data = GenerationData.query.all()
-    result = [{'id': d.id, 'Year': d.Year, 'Month': d.Month, 'State': d.State, 
-               'ProducerType': d.ProducerType, 'EnergySource': d.EnergySource, 
-               'Generation': d.Generation} for d in data]
-    return jsonify(result)
+    if start_date is None or end_date is None:
+        print("Error: Invalid start or end date.")
+        return pd.DataFrame()
 
-# Route for fetching ConsumptionData
-@app.route('/consumption', methods=['GET'])
-# @requires_auth
-def get_consumption_data():
-    data = ConsumptionData.query.all()
-    result = [{'id': d.id, 'Year': d.Year, 'Hydroelectric': d.Hydroelectric, 'Geothermal': d.Geothermal, 
-               'Solar': d.Solar, 'Wind': d.Wind, 'Wood': d.Wood, 'Waste': d.Waste, 
-               'Biofuels': d.Biofuels, 'TotalBiomass': d.TotalBiomass, 
-               'TotalRenewable': d.TotalRenewable} for d in data]
-    return jsonify(result)
+    mask = (data['Hour Ending'] >= start_date) & (data['Hour Ending'] <= end_date)
+    return data.loc[mask]
 
-if __name__ == '__main__':
-    app.run(debug=True)
+
+
+def filter_data_by_region(data, region):
+    if region not in data.columns:
+        print(f"Region {region} not found in the data.")
+        return pd.DataFrame()
+    filtered_region_data = data[['Hour Ending', region]]
+    print(f"Region '{region}' filtered data count:", filtered_region_data.shape[0])
+    return filtered_region_data
+
+def get_regions(data):
+    regions = [col for col in data.columns if col != 'Hour Ending']
+    return regions
+
+def dynamic_aggregation(data, flags):
+    if flags.get('h'):
+        granularity = 'hour'
+    elif flags.get('d'):
+        granularity = 'day'
+    elif flags.get('m'):
+        granularity = 'month'
+    elif flags.get('y'):
+        granularity = 'year'
+    else:
+        return data  # No aggregation if no flags are set
+
+    # Extract date parts for aggregation
+    data = data.copy()
+    data['year'] = data['Hour Ending'].dt.year
+    if granularity in ['month', 'day', 'hour']:
+        data['month'] = data['Hour Ending'].dt.month
+    if granularity in ['day', 'hour']:
+        data['day'] = data['Hour Ending'].dt.day
+    if granularity == 'hour':
+        data['hour'] = data['Hour Ending'].dt.hour
+
+    # Group and aggregate data
+    grouping_columns = ['year', 'month', 'day', 'hour'][:['year', 'month', 'day', 'hour'].index(granularity) + 1]
+    numeric_columns = data.select_dtypes(include='number').columns.tolist()
+    aggregated_data = data.groupby(grouping_columns)[numeric_columns].sum()
+
+    return aggregated_data
+
+@app.route('/api/data', methods=['GET', 'OPTIONS'])
+def get_data():
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+    region = request.args.get('region')
+    flags = {
+        'y': request.args.get('year', 'false') == 'true',
+        'm': request.args.get('month', 'false') == 'true',
+        'd': request.args.get('day', 'false') == 'true',
+        'h': request.args.get('hour', 'false') == 'true'
+    }
+    print(f"Received Start Date: {start_date_str}, End Date: {end_date_str}, Region: {region}")
+    print("Start Date:", start_date_str)
+    print("End Date:", end_date_str)
+    print("Flags:", flags)
+
+    data = load_excel_data()
+    print("Data columns:", data.columns)
+    if start_date_str or end_date_str:
+        filtered_data = filter_data(data, start_date_str, end_date_str, flags)
+        print("Filtered Data columns:", filtered_data.columns)
+    else:
+        filtered_data = data
+
+    if region and region in data.columns:
+        filtered_data = filter_data_by_region(filtered_data, region)
+    print("Region Filtered Data columns:", filtered_data.columns)
+    
+    aggregated_data = dynamic_aggregation(filtered_data, flags)
+    return jsonify(aggregated_data.to_dict(orient='records'))
+
+@app.route('/api/regions', methods=['GET', 'OPTIONS'])
+def list_regions():
+    data = load_excel_data()
+    regions = get_regions(data)
+    return jsonify(regions)
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
