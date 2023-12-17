@@ -56,10 +56,11 @@ def get_data():
         logging.error(f"Error processing request: {e}")
         return jsonify({"error": "An error occurred processing your request."}), 500
 
-@app.route('/welcome')
-def welcome():
-    # Serve the static HTML file on the /welcome route
-    return app.send_static_file('welcomepage.html')
-
-if __name__ == '__main__':
-    app.run(debug=True)
+#@app.route('/welcome')
+#def welcome():
+#    # Serve the static HTML file on the /welcome route
+#    return app.send_static_file('welcomepage.html')
+#
+#if __name__ == '__main__':
+#    app.run(debug=True)
+#
